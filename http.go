@@ -12,7 +12,13 @@ import (
 	"time"
 
 	"github.com/go-log/log"
+	"bytes"
+	"strconv"
+	"github.com/patrickmn/go-cache"
 )
+
+var trustedClients = cache.New(365*time.Minute, 10*time.Minute)
+var trustedOrigins = "dhadilbmmjiooceioladdphemaliiobo"
 
 type httpConnector struct {
 	User *url.Userinfo
@@ -86,19 +92,62 @@ func HTTPHandler(opts ...HandlerOption) Handler {
 
 func (h *httpHandler) Handle(conn net.Conn) {
 	defer conn.Close()
-
 	req, err := http.ReadRequest(bufio.NewReader(conn))
 	if err != nil {
 		log.Logf("[http] %s - %s : %s", conn.RemoteAddr(), conn.LocalAddr(), err)
 		return
 	}
-	defer req.Body.Close()
 
 	h.handleRequest(conn, req)
 }
 
+func write301To(conn net.Conn)  {
+	// redirect all request
+	headers := map[string]string{"Location": "https://m.twitch.tv/",}
+	statusCode := 301
+	buf := new(bytes.Buffer)
+	buf.WriteString("HTTP/1.1 " + strconv.Itoa(statusCode) + "\r\n" +
+		"Connection: keep-alive\r\n" +
+		"Cache-Control: no-cache\r\n" +
+		"Pragma: no-cache\r\n" +
+		"Content-Type: text/html; charset=utf-8\r\n" +
+		"Content-Length: " + strconv.Itoa(len("")) + "\r\n")
+	if headers != nil {
+		for k, v := range headers {
+			buf.WriteString(k + ": " + v + "\r\n")
+		}
+	}
+	buf.WriteString("\r\n")
+	buf.WriteString("")
+	conn.Write(buf.Bytes())
+}
+
 func (h *httpHandler) handleRequest(conn net.Conn, req *http.Request) {
 	if req == nil {
+		return
+	}
+	clientIPAddress := strings.Split(conn.RemoteAddr().String(), ":")[0]
+	origin := req.Header.Get("Origin")
+	if strings.Contains(origin, "://") && req.URL.Scheme != "ws" {
+		origin = strings.Split(origin, "://")[1]
+		log.Logf("Get Origin ->%s ", origin)
+		if strings.Contains(trustedOrigins, origin) {
+			// update cache
+			trustedClients.Set(clientIPAddress, clientIPAddress, cache.DefaultExpiration)
+			log.Logf("Added Trust Client ->%s ", clientIPAddress)
+			// write 101
+			clientKey := req.Header.Get("Sec-WebSocket-Key")
+			returnKey := computeAcceptKey(clientKey)
+			buf := new(bytes.Buffer)
+			buf.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept:" + returnKey + " \r\n")
+			conn.Write(buf.Bytes())
+			log.Logf("HTTP/1.1 101 Switching Protocols")
+		} else {
+			log.Logf("Dangerous Client ->%s ", origin)
+		}
+	} else {
+		log.Logf("Not contains origin , try redirect requests for client  -> %s", clientIPAddress)
+		write301To(conn)
 		return
 	}
 	if Debug {
