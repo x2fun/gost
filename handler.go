@@ -9,6 +9,8 @@ import (
 	"github.com/ginuerzh/gosocks4"
 	"github.com/ginuerzh/gosocks5"
 	"github.com/go-log/log"
+	"strings"
+	"bytes"
 )
 
 // Handler is a proxy server handler
@@ -95,19 +97,17 @@ func (h *autoHandler) Handle(conn net.Conn) {
 	cc := &bufferdConn{Conn: conn, br: br}
 	switch b[0] {
 	case gosocks4.Ver4:
-		options := &HandlerOptions{}
-		for _, opt := range h.options {
-			opt(options)
-		}
-		// SOCKS4(a) does not suppport authentication method,
-		// so we ignore it when credentials are specified for security reason.
-		if len(options.Users) > 0 {
+		cc.Close()
+		return // SOCKS4(a) does not suppport authentication method, so we ignore it for security reason.
+	case gosocks5.Ver5:
+		// check client
+		clientIPAddress := strings.Split(conn.RemoteAddr().String(), ":")[0]
+		_, has := trustedClients.Get(clientIPAddress)
+		// disconnect un-trust client
+		if !has {
 			cc.Close()
 			return
-		}
-		h := &socks4Handler{options}
-		h.Handle(cc)
-	case gosocks5.Ver5:
+		} 
 		SOCKS5Handler(h.options...).Handle(cc)
 	default: // http
 		HTTPHandler(h.options...).Handle(cc)
